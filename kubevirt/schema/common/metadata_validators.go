@@ -1,8 +1,8 @@
-package kubevirt
+package common
 
 import (
+	"encoding/base64"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -12,29 +12,48 @@ import (
 	utilValidation "k8s.io/apimachinery/pkg/util/validation"
 )
 
-func isInternalKey(annotationKey string) bool {
-	u, err := url.Parse("//" + annotationKey)
-	if err == nil && strings.HasSuffix(u.Hostname(), "kubernetes.io") {
-		return true
-	}
-
-	return false
-}
-
 func validateAnnotations(value interface{}, key string) (ws []string, es []error) {
 	m := value.(map[string]interface{})
-	for k, _ := range m {
+	for k := range m {
 		errors := utilValidation.IsQualifiedName(strings.ToLower(k))
 		if len(errors) > 0 {
 			for _, e := range errors {
 				es = append(es, fmt.Errorf("%s (%q) %s", key, k, e))
 			}
 		}
+	}
+	return
+}
 
-		if isInternalKey(k) {
-			es = append(es, fmt.Errorf("%s: %q is internal Kubernetes annotation", key, k))
+func validateBase64Encoded(v interface{}, key string) (ws []string, es []error) {
+	s, ok := v.(string)
+	if !ok {
+		es = []error{fmt.Errorf("%s: must be a non-nil base64-encoded string", key)}
+		return
+	}
+
+	_, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		es = []error{fmt.Errorf("%s: must be a base64-encoded string", key)}
+		return
+	}
+	return
+}
+
+func validateBase64EncodedMap(value interface{}, key string) (ws []string, es []error) {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		es = []error{fmt.Errorf("%s: must be a map of strings to base64 encoded strings", key)}
+		return
+	}
+
+	for k, v := range m {
+		_, errs := validateBase64Encoded(v, k)
+		for _, e := range errs {
+			es = append(es, fmt.Errorf("%s (%q) %s", k, v, e))
 		}
 	}
+
 	return
 }
 
@@ -146,29 +165,18 @@ func validateResourceQuantity(value interface{}, key string) (ws []string, es []
 	return
 }
 
+func validateNonNegativeInteger(value interface{}, key string) (ws []string, es []error) {
+	v := value.(int)
+	if v < 0 {
+		es = append(es, fmt.Errorf("%s must be greater than or equal to 0", key))
+	}
+	return
+}
+
 func validatePositiveInteger(value interface{}, key string) (ws []string, es []error) {
 	v := value.(int)
 	if v <= 0 {
 		es = append(es, fmt.Errorf("%s must be greater than 0", key))
-	}
-	return
-}
-
-func validateDNSPolicy(value interface{}, key string) (ws []string, es []error) {
-	v := value.(string)
-	if v != "ClusterFirst" && v != "Default" {
-		es = append(es, fmt.Errorf("%s must be either ClusterFirst or Default", key))
-	}
-	return
-}
-
-func validateRestartPolicy(value interface{}, key string) (ws []string, es []error) {
-	v := value.(string)
-	switch v {
-	case "Always", "OnFailure", "Never":
-		return
-	default:
-		es = append(es, fmt.Errorf("%s must be one of Always, OnFailure or Never ", key))
 	}
 	return
 }
@@ -181,8 +189,44 @@ func validateTerminationGracePeriodSeconds(value interface{}, key string) (ws []
 	return
 }
 
+func validateIntGreaterThan(minValue int) func(value interface{}, key string) (ws []string, es []error) {
+	return func(value interface{}, key string) (ws []string, es []error) {
+		v := value.(int)
+		if v < minValue {
+			es = append(es, fmt.Errorf("%s must be greater than or equal to %d", key, minValue))
+		}
+		return
+	}
+}
+
+// validateTypeStringNullableInt provides custom error messaging for TypeString ints
+// Some arguments require an int value or unspecified, empty field.
+func validateTypeStringNullableInt(v interface{}, k string) (ws []string, es []error) {
+	value, ok := v.(string)
+	if !ok {
+		es = append(es, fmt.Errorf("expected type of %s to be string", k))
+		return
+	}
+
+	if value == "" {
+		return
+	}
+
+	if _, err := strconv.ParseInt(value, 10, 64); err != nil {
+		es = append(es, fmt.Errorf("%s: cannot parse '%s' as int: %s", k, value, err))
+	}
+
+	return
+}
+
 func validateModeBits(value interface{}, key string) (ws []string, es []error) {
-	v := value.(int)
+	if !strings.HasPrefix(value.(string), "0") {
+		es = append(es, fmt.Errorf("%s: value %s should start with '0' (octal numeral)", key, value.(string)))
+	}
+	v, err := strconv.ParseInt(value.(string), 8, 32)
+	if err != nil {
+		es = append(es, fmt.Errorf("%s :Cannot parse octal numeral (%#v): %s", key, value, err))
+	}
 	if v < 0 || v > 0777 {
 		es = append(es, fmt.Errorf("%s (%#o) expects octal notation (a value between 0 and 0777)", key, v))
 	}
@@ -219,4 +263,30 @@ func validateAttributeValueIsIn(validValues []string) schema.SchemaValidateFunc 
 		return
 
 	}
+}
+
+func validateTypeStringNullableIntOrPercent(v interface{}, key string) (ws []string, es []error) {
+	value, ok := v.(string)
+	if !ok {
+		es = append(es, fmt.Errorf("expected type of %s to be string", key))
+		return
+	}
+
+	if value == "" {
+		return
+	}
+
+	if strings.HasSuffix(value, "%") {
+		percent, err := strconv.ParseInt(strings.TrimSuffix(value, "%"), 10, 32)
+		if err != nil {
+			es = append(es, fmt.Errorf("%s: cannot parse '%s' as percent: %s", key, value, err))
+		}
+		if percent < 0 || percent >= 100 {
+			es = append(es, fmt.Errorf("%s: '%s' is not between 0%% and 100%%", key, value))
+		}
+	} else if _, err := strconv.ParseInt(value, 10, 32); err != nil {
+		es = append(es, fmt.Errorf("%s: cannot parse '%s' as int or percent: %s", key, value, err))
+	}
+
+	return
 }

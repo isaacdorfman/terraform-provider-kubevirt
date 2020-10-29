@@ -41,7 +41,7 @@ func resourceKubevirtVirtualMachineCreate(d *schema.ResourceData, meta interface
 	}
 
 	log.Printf("[INFO] Creating new virtual machine: %#v", vm)
-	if err := cli.CreateVirtualMachine(*vm); err != nil {
+	if err := cli.CreateVirtualMachine(vm); err != nil {
 		return err
 	}
 	log.Printf("[INFO] Submitted new virtual machine: %#v", vm)
@@ -61,7 +61,7 @@ func resourceKubevirtVirtualMachineRead(d *schema.ResourceData, meta interface{}
 
 	log.Printf("[INFO] Reading virtual machine %s", name)
 
-	vm, err := cli.GetVirtualMachine(namespace, name)
+	vm, err := cli.ReadVirtualMachine(namespace, name)
 	if err != nil {
 		log.Printf("[DEBUG] Received error: %#v", err)
 		return err
@@ -177,7 +177,7 @@ func resourceKubevirtVirtualMachineDelete(d *schema.ResourceData, meta interface
 			Pending: []string{"Deleting"},
 			Timeout: d.Timeout(schema.TimeoutDelete),
 			Refresh: func() (interface{}, string, error) {
-				vm, err := cli.GetVirtualMachine(namespace, name)
+				vm, err := cli.ReadVirtualMachine(namespace, name)
 				if err != nil {
 					if errors.IsNotFound(err) {
 						return nil, "", nil
@@ -208,7 +208,7 @@ func resourceKubevirtVirtualMachineExists(d *schema.ResourceData, meta interface
 	cli := (meta).(client.Client)
 
 	log.Printf("[INFO] Checking virtual machine %s", name)
-	if _, err := cli.GetVirtualMachine(namespace, name); err != nil {
+	if _, err := cli.ReadVirtualMachine(namespace, name); err != nil {
 		if statusErr, ok := err.(*errors.StatusError); ok && statusErr.ErrStatus.Code == 404 {
 			return false, nil
 		}
